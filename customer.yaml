@@ -1,0 +1,123 @@
+Parameters:
+  UserDomainName:
+    Type: String
+  ManagementDomainName:
+    Type: String
+  CertificateArn:
+    Type: String
+  DatabaseName:
+    Type: String
+  DatabaseUser:
+    Type: String
+  DatabasePassword:
+    Type: String
+    NoEcho: true
+
+Resources:
+  UserFrontend:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: https://astrareal-cloudformation-templates.s3.ap-southeast-1.amazonaws.com/cloudfront.yaml
+      Parameters:
+        DomainName: !Ref UserDomainName
+        CertificateArn: !Ref CertificateArn
+
+  ManagementFrontend:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: https://astrareal-cloudformation-templates.s3.ap-southeast-1.amazonaws.com/cloudfront.yaml
+      Parameters:
+        DomainName: !Ref ManagementDomainName
+        CertificateArn: !Ref CertificateArn
+
+  ElasticBeanstalkBackend:
+    Type: AWS::ElasticBeanstalk::Environment
+    Properties:
+      ApplicationName: !ImportValue backend-astrareal-tech-EBApplicationName
+      SolutionStackName: "64bit Amazon Linux 2 v3.5.9 running Docker"
+      Tier:
+        Name: WebServer
+        Type: Standard
+      OptionSettings:
+        - Namespace: aws:elasticbeanstalk:environment
+          OptionName: "ServiceRole"
+          Value: !ImportValue backend-astrareal-tech-EBServiceRoleArn
+        - Namespace: aws:elasticbeanstalk:environment
+          OptionName: "LoadBalancerType"
+          Value: "application"
+        - Namespace: aws:elasticbeanstalk:environment:process:default
+          OptionName: "HealthCheckPath"
+          Value: "/actuator/health"
+        - Namespace: aws:elasticbeanstalk:environment:process:default
+          OptionName: "MatcherHTTPCode"
+          Value: "200"
+        - Namespace: aws:autoscaling:launchconfiguration
+          OptionName: IamInstanceProfile
+          Value: !ImportValue backend-astrareal-tech-EBInstanceProfileArn
+        - Namespace: aws:autoscaling:launchconfiguration
+          OptionName: InstanceType
+          Value: "t2.micro"
+        - Namespace: aws:elasticbeanstalk:managedactions
+          OptionName: "ManagedActionsEnabled"
+          Value: "true"
+        - Namespace: aws:elasticbeanstalk:managedactions
+          OptionName: "PreferredStartTime"
+          Value: "SUN:00:00"
+        - Namespace: aws:elasticbeanstalk:managedactions:platformupdate
+          OptionName: "InstanceRefreshEnabled"
+          Value: "true"
+        - Namespace: aws:elasticbeanstalk:managedactions:platformupdate
+          OptionName: "UpdateLevel"
+          Value: "minor"
+        - Namespace: aws:elasticbeanstalk:sns:topics
+          OptionName: "Notification Endpoint"
+          Value: "notifications@astrareal.tech"
+        - Namespace: "aws:elasticbeanstalk:application:environment"
+          OptionName: "SERVER_PORT"
+          Value: "80"
+        - Namespace: "aws:elasticbeanstalk:application:environment"
+          OptionName: "SPRING_DATASOURCE_URL"
+          Value: !Sub "jdbc:postgresql://backend-astrareal-tech-database-odqewgfdei2a.c68qnecespy8.ap-southeast-1.rds.amazonaws.com:5432/${DatabaseName}"
+        - Namespace: "aws:elasticbeanstalk:application:environment"
+          OptionName: "SPRING_DATASOURCE_USERNAME"
+          Value: !Ref DatabaseUser
+        - Namespace: "aws:elasticbeanstalk:application:environment"
+          OptionName: "SPRING_DATASOURCE_PASSWORD"
+          Value: !Ref DatabasePassword
+        - Namespace: "aws:elasticbeanstalk:application:environment"
+          OptionName: "RESIDENTIAL_SERVER_HOSTNAME"
+          Value: !Sub "https://${UserDomainName},https://${ManagementDomainName}"
+        - Namespace: aws:ec2:vpc
+          OptionName: "AssociatePublicIpAddress"
+          ResourceName: "AWSEBAutoScalingLaunchConfiguration"
+          Value: "true"
+        - Namespace: aws:ec2:vpc
+          OptionName: "Subnets"
+          ResourceName: "AWSEBAutoScalingGroup"
+          Value: !ImportValue backend-astrareal-tech-SubnetIds
+        - Namespace: aws:ec2:vpc
+          OptionName: "ELBSubnets"
+          Value: !ImportValue backend-astrareal-tech-SubnetIds
+        - Namespace: aws:ec2:vpc
+          OptionName: "VPCId"
+          ResourceName: "AWSEBLoadBalancerSecurityGroup"
+          Value: !ImportValue backend-astrareal-tech-VpcId
+        - Namespace: aws:autoscaling:asg
+          OptionName: "MaxSize"
+          ResourceName: "AWSEBAutoScalingGroup"
+          Value: "1"
+        - Namespace: aws:elbv2:listener:443
+          OptionName: DefaultProcess
+          Value: "default"
+        - Namespace: aws:elbv2:listener:443
+          OptionName: ListenerEnabled
+          Value: "true"
+        - Namespace: aws:elbv2:listener:443
+          OptionName: Protocol
+          Value: "HTTPS"
+        - Namespace: aws:elbv2:listener:443
+          OptionName: SSLCertificateArns
+          Value: "arn:aws:acm:ap-southeast-1:183015051582:certificate/c69af64e-28b5-4b86-946c-fdc8d3e30bf7"
+        - Namespace: aws:elbv2:listener:443
+          OptionName: SSLPolicy
+          Value: "ELBSecurityPolicy-TLS13-1-2-2021-06"

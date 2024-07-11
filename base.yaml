@@ -1,0 +1,230 @@
+Parameters:
+  DBMasterUsername:
+    Type: String
+  DBMasterUserPassword:
+    Type: String
+    NoEcho: true
+
+Resources:
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: "10.11.0.0/22"
+      EnableDnsHostnames: true
+
+  SubnetAZ1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: "10.11.0.0/24"
+      AvailabilityZone: "ap-southeast-1a"
+      MapPublicIpOnLaunch: true
+
+  SubnetAZ2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: "10.11.1.0/24"
+      AvailabilityZone: "ap-southeast-1b"
+      MapPublicIpOnLaunch: true
+
+  SubnetAZ3:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: "10.11.2.0/24"
+      AvailabilityZone: "ap-southeast-1c"
+      MapPublicIpOnLaunch: true
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+
+  IGWAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref VPC
+      InternetGatewayId: !Ref InternetGateway
+
+  PrivateRegistry:
+    Type: AWS::ECR::Repository
+    Properties:
+      LifecyclePolicy:
+        LifecyclePolicyText: |
+          {
+            "rules": [
+                {
+                    "rulePriority": 1,
+                    "description": "Expire untagged artifacts after 1 day.",
+                    "selection": {
+                        "tagStatus": "untagged",
+                        "countType": "sinceImagePushed",
+                        "countUnit": "days",
+                        "countNumber": 1
+                    },
+                    "action": {
+                        "type": "expire"
+                    }
+                }
+            ]
+          }
+
+  EBApplication:
+    Type: AWS::ElasticBeanstalk::Application
+
+  EBServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - elasticbeanstalk.amazonaws.com
+            Action:
+              - sts:AssumeRole
+            Condition:
+              StringEquals:
+                sts:ExternalId: "elasticbeanstalk"
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSElasticBeanstalkEnhancedHealth
+        - arn:aws:iam::aws:policy/AWSElasticBeanstalkManagedUpdatesCustomerRolePolicy
+
+  EBInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref EBInstanceRole
+
+  EBInstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ec2.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AWSElasticBeanstalkWebTier
+        - arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly
+
+  IAMUser:
+    Type: AWS::IAM::User
+    Properties:
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AdministratorAccess-AWSElasticBeanstalk
+      Policies:
+        - PolicyName: "private-registry-push"
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ecr:GetAuthorizationToken
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - ecr:CompleteLayerUpload
+                  - ecr:UploadLayerPart
+                  - ecr:InitiateLayerUpload
+                  - ecr:BatchCheckLayerAvailability
+                  - ecr:PutImage
+                Resource:
+                  - !GetAtt PrivateRegistry.Arn
+        - PolicyName: "elastic-beanstalk-update"
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:GetObjectAcl
+                  - s3:PutObject
+                  - s3:PutObjectAcl
+                  - s3:ListBucket
+                  - s3:GetBucketPolicy
+                Resource:
+                  - !Sub "arn:aws:s3:::elasticbeanstalk-${AWS::Region}-${AWS::AccountId}"
+                  - !Sub "arn:aws:s3:::elasticbeanstalk-${AWS::Region}-${AWS::AccountId}/*"
+
+  IAMSecurityCredentials:
+    Type: AWS::IAM::AccessKey
+    Properties:
+      UserName: !Ref IAMUser
+
+  DatabaseSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: !Sub "Database Subnet Group for VPC ${VPC}"
+      SubnetIds:
+        - !Ref SubnetAZ1
+        - !Ref SubnetAZ2
+        - !Ref SubnetAZ3
+
+  DatabaseSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: !Sub "Security Group for RDS database ${AWS::StackName}"
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 5432
+          ToPort: 5432
+          SourceSecurityGroupId: sg-00cc06212039f2609
+        - IpProtocol: tcp
+          FromPort: 5432
+          ToPort: 5432
+          CidrIp: "0.0.0.0/0"
+          Description: "Maintenance access"
+
+  Database:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      Engine: postgres
+      EngineVersion: "14.7"
+      CACertificateIdentifier: rds-ca-rsa2048-g1
+      DBInstanceClass: db.t4g.micro
+      AllocatedStorage: "20"
+      AllowMajorVersionUpgrade: false
+      AutoMinorVersionUpgrade: false
+      BackupRetentionPeriod: 0
+      MasterUsername: !Ref DBMasterUsername
+      MasterUserPassword: !Ref DBMasterUserPassword
+      PreferredBackupWindow: 00:00-01:00
+      PreferredMaintenanceWindow: SUN:02:00-SUN:03:00
+      EnableIAMDatabaseAuthentication: true
+      PubliclyAccessible: true
+      DeletionProtection: true
+      DBSubnetGroupName: !Ref DatabaseSubnetGroup
+      VPCSecurityGroups:
+        - !Ref DatabaseSecurityGroup
+
+Outputs:
+  AccessKeyId:
+    Value: !Ref IAMSecurityCredentials
+  SecretAccessKey:
+    Value: !GetAtt IAMSecurityCredentials.SecretAccessKey
+  EBApplicationName:
+    Value: !Ref EBApplication
+    Export:
+      Name: !Sub "${AWS::StackName}-EBApplicationName"
+  EBServiceRoleArn:
+    Value: !GetAtt EBServiceRole.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-EBServiceRoleArn"
+  EBInstanceProfileArn:
+    Value: !GetAtt EBInstanceProfile.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-EBInstanceProfileArn"
+  VpcId:
+    Value: !Ref VPC
+    Export:
+      Name: !Sub "${AWS::StackName}-VpcId"
+  SubnetIds:
+    Value: !Join [",", [!Ref SubnetAZ1, !Ref SubnetAZ2, !Ref SubnetAZ3]]
+    Export:
+      Name: !Sub "${AWS::StackName}-SubnetIds"
